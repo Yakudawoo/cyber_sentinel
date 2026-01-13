@@ -1,7 +1,6 @@
 import matplotlib.pyplot as plt
 import seaborn as sns
 import numpy as np
-import json
 import os
 
 from sklearn.metrics import (
@@ -11,14 +10,17 @@ from sklearn.metrics import (
 )
 
 
-def make_plots(model, X_test, y_test, metrics: dict, output_dir: str = "outputs"):
+def make_plots(model, X_test, y_test, df, output_dir="outputs"):
     """
-    Generate professional visualizations:
+    Generate visualizations required by the pipeline:
     - ROC curve
     - Precision-Recall curve
     - Confusion matrix heatmap
     - Feature importance (XGBoost)
-    Saves PNGs into /outputs.
+
+    NOTE:
+    - The 'df' argument is provided by run.py (contract), but not used here.
+    - metrics.json is NOT saved in this function (handled in run.py).
     """
 
     os.makedirs(output_dir, exist_ok=True)
@@ -28,13 +30,11 @@ def make_plots(model, X_test, y_test, metrics: dict, output_dir: str = "outputs"
     # --------------------------------------------------------
     if hasattr(model.named_steps["model"], "predict_proba"):
         y_proba = model.predict_proba(X_test)[:, 1]
+    elif hasattr(model.named_steps["model"], "decision_function"):
+        raw = model.decision_function(X_test)
+        y_proba = (raw - raw.min()) / (raw.max() - raw.min() + 1e-9)
     else:
-        # fallback: approximate scores
-        if hasattr(model.named_steps["model"], "decision_function"):
-            raw = model.decision_function(X_test)
-            y_proba = (raw - raw.min()) / (raw.max() - raw.min() + 1e-9)
-        else:
-            y_proba = model.predict(X_test).astype(float)
+        y_proba = model.predict(X_test).astype(float)
 
     # --------------------------------------------------------
     # 2. ROC Curve
@@ -63,9 +63,11 @@ def make_plots(model, X_test, y_test, metrics: dict, output_dir: str = "outputs"
     cm = confusion_matrix(y_test, y_pred)
 
     plt.figure(figsize=(6, 5))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
-                xticklabels=["normal", "anomaly"],
-                yticklabels=["normal", "anomaly"])
+    sns.heatmap(
+        cm, annot=True, fmt="d", cmap="Blues",
+        xticklabels=["normal", "anomaly"],
+        yticklabels=["normal", "anomaly"]
+    )
     plt.title("Confusion Matrix")
     plt.ylabel("True label")
     plt.xlabel("Predicted label")
@@ -78,14 +80,13 @@ def make_plots(model, X_test, y_test, metrics: dict, output_dir: str = "outputs"
     model_xgb = model.named_steps["model"]
 
     if hasattr(model_xgb, "feature_importances_"):
-        # Get feature names after preprocessing (OHE expands categories)
         try:
             feature_names = model.named_steps["preproc"].get_feature_names_out()
         except Exception:
             feature_names = [f"f{i}" for i in range(len(model_xgb.feature_importances_))]
 
         importances = model_xgb.feature_importances_
-        idx = np.argsort(importances)[-20:]  # show top 20
+        idx = np.argsort(importances)[-20:]  # top 20
 
         plt.figure(figsize=(10, 7))
         plt.barh(np.array(feature_names)[idx], importances[idx], color="navy")
@@ -94,9 +95,3 @@ def make_plots(model, X_test, y_test, metrics: dict, output_dir: str = "outputs"
         plt.tight_layout()
         plt.savefig(f"{output_dir}/feature_importance.png", dpi=120)
         plt.close()
-
-    # --------------------------------------------------------
-    # 6. Save metrics.json as pretty JSON
-    # --------------------------------------------------------
-    with open(f"{output_dir}/metrics.json", "w") as f:
-        json.dump(metrics, f, indent=4)
