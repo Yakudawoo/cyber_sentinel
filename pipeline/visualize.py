@@ -1,90 +1,97 @@
-import os
-import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
+import numpy as np
+import os
+
 from sklearn.metrics import (
-    ConfusionMatrixDisplay, confusion_matrix, roc_curve, auc, precision_recall_curve
+    RocCurveDisplay,
+    PrecisionRecallDisplay,
+    confusion_matrix
 )
 
-def _ensure(outdir: str):
-    os.makedirs(outdir, exist_ok=True)
 
-def make_plots(model, X_test, y_test, df_full, outdir: str):
+def make_plots(model, X_test, y_test, df, output_dir="outputs"):
     """
-    Save PNGs: confusion matrix, ROC, PR curve, top feature importances (if available).
-    TODO (Student E): add per-flag/per-service breakdowns, error analysis, and threshold-sweep plots.
-    """
-    _ensure(outdir)
+    Generate visualizations required by the pipeline:
+    - ROC curve
+    - Precision-Recall curve
+    - Confusion matrix heatmap
+    - Feature importance (XGBoost)
 
-    # Predictions / scores
-    y_pred = model.predict(X_test)
+    NOTE:
+    - The 'df' argument is provided by run.py (contract), but not used here.
+    - metrics.json is NOT saved in this function (handled in run.py).
+    """
+
+    os.makedirs(output_dir, exist_ok=True)
+
+    # --------------------------------------------------------
+    # 1. Probabilities for curves
+    # --------------------------------------------------------
     if hasattr(model.named_steps["model"], "predict_proba"):
         y_proba = model.predict_proba(X_test)[:, 1]
+    elif hasattr(model.named_steps["model"], "decision_function"):
+        raw = model.decision_function(X_test)
+        y_proba = (raw - raw.min()) / (raw.max() - raw.min() + 1e-9)
     else:
-        y_proba = y_pred.astype(float)
+        y_proba = model.predict(X_test).astype(float)
 
-    # Confusion matrix
-    cm = confusion_matrix(y_test, y_pred)
-    disp = ConfusionMatrixDisplay(cm, display_labels=["normal (0)", "anomaly (1)"])
-    disp.plot(cmap="Blues")
-    plt.title("Confusion Matrix")
-    plt.tight_layout()
-    plt.savefig(os.path.join(outdir, "confusion_matrix.png"), dpi=150)
+    # --------------------------------------------------------
+    # 2. ROC Curve
+    # --------------------------------------------------------
+    plt.figure(figsize=(7, 6))
+    RocCurveDisplay.from_predictions(y_test, y_proba)
+    plt.title("ROC Curve (Anomaly Detection)")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.savefig(f"{output_dir}/roc_curve.png", dpi=120)
     plt.close()
 
-    # ROC curve
-    try:
-        fpr, tpr, _ = roc_curve(y_test, y_proba)
-        roc_auc = auc(fpr, tpr)
-        plt.figure()
-        plt.plot(fpr, tpr, label=f"AUC = {roc_auc:.3f}")
-        plt.plot([0,1], [0,1], linestyle="--")
-        plt.xlabel("False Positive Rate")
-        plt.ylabel("True Positive Rate")
-        plt.title("ROC Curve")
-        plt.legend(loc="lower right")
+    # --------------------------------------------------------
+    # 3. Precision–Recall Curve
+    # --------------------------------------------------------
+    plt.figure(figsize=(7, 6))
+    PrecisionRecallDisplay.from_predictions(y_test, y_proba)
+    plt.title("Precision-Recall Curve (Anomaly = Positive Class)")
+    plt.grid(True, linestyle="--", alpha=0.5)
+    plt.savefig(f"{output_dir}/pr_curve.png", dpi=120)
+    plt.close()
+
+    # --------------------------------------------------------
+    # 4. Confusion Matrix
+    # --------------------------------------------------------
+    y_pred = model.predict(X_test)
+    cm = confusion_matrix(y_test, y_pred)
+
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(
+        cm, annot=True, fmt="d", cmap="Blues",
+        xticklabels=["normal", "anomaly"],
+        yticklabels=["normal", "anomaly"]
+    )
+    plt.title("Confusion Matrix")
+    plt.ylabel("True label")
+    plt.xlabel("Predicted label")
+    plt.savefig(f"{output_dir}/confusion_matrix.png", dpi=120)
+    plt.close()
+
+    # --------------------------------------------------------
+    # 5. Feature Importance (XGBoost)
+    # --------------------------------------------------------
+    model_xgb = model.named_steps["model"]
+
+    if hasattr(model_xgb, "feature_importances_"):
+        try:
+            feature_names = model.named_steps["preproc"].get_feature_names_out()
+        except Exception:
+            feature_names = [f"f{i}" for i in range(len(model_xgb.feature_importances_))]
+
+        importances = model_xgb.feature_importances_
+        idx = np.argsort(importances)[-20:]  # top 20
+
+        plt.figure(figsize=(10, 7))
+        plt.barh(np.array(feature_names)[idx], importances[idx], color="navy")
+        plt.title("Top 20 Feature Importances (XGBoost)")
+        plt.xlabel("Importance")
         plt.tight_layout()
-        plt.savefig(os.path.join(outdir, "roc_curve.png"), dpi=150)
+        plt.savefig(f"{output_dir}/feature_importance.png", dpi=120)
         plt.close()
-    except Exception:
-        pass
-
-    # Precision–Recall curve
-    try:
-        prec, rec, _ = precision_recall_curve(y_test, y_proba)
-        ap = np.trapz(prec[::-1], rec[::-1])  # rough area; AP is in metrics.json
-        plt.figure()
-        plt.plot(rec, prec, label=f"Area ≈ {ap:.3f}")
-        plt.xlabel("Recall")
-        plt.ylabel("Precision")
-        plt.title("Precision–Recall Curve")
-        plt.legend(loc="lower left")
-        plt.tight_layout()
-        plt.savefig(os.path.join(outdir, "pr_curve.png"), dpi=150)
-        plt.close()
-    except Exception:
-        pass
-
-    # Feature importances (best-effort): try XGB feature names after preprocessing
-    try:
-        import numpy as np
-        model_step = model.named_steps["model"]
-        booster = model_step.get_booster()
-        scores = booster.get_fscore()  # dict of {'f0': count, 'f1': count, ...}
-
-        # Map fN to transformed feature indices
-        # NOTE: ColumnTransformer + OHE expands columns; getting exact names is advanced.
-        # As a simple proxy, plot top indices by importance:
-        items = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:20]
-        if items:
-            names = [k for k,_ in items]
-            vals  = [v for _,v in items]
-            plt.figure(figsize=(6, max(3, len(items)*0.25)))
-            sns.barplot(x=vals, y=names, orient="h")
-            plt.title("Top XGBoost Split Importances (by feature index)")
-            plt.xlabel("Split Count")
-            plt.tight_layout()
-            plt.savefig(os.path.join(outdir, "xgb_feature_importance.png"), dpi=150)
-            plt.close()
-    except Exception:
-        pass
