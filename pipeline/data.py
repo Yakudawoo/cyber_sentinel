@@ -20,6 +20,7 @@ def load_data(path: str = "data/train_data.csv") -> pd.DataFrame:
     """
 
     df = pd.read_csv(path)
+    df.describe()
 
     # -----------------------------
     # 1. Validate expected columns
