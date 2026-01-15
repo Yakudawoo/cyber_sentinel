@@ -3,6 +3,9 @@
 pandas
 numpy
 scikit-learn
-xgboost
+xgboost==1.7.6
 matplotlib
+seaborn # à rajouter
+plotly #
 pytest
+# travailler avec python 3.11

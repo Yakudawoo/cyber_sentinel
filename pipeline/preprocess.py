@@ -1,29 +1,25 @@
 import pandas as pd
-from typing import Tuple, List
+from typing import Tuple
+from sklearn.pipeline import Pipeline
 from sklearn.model_selection import train_test_split
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import OneHotEncoder, RobustScaler
 from sklearn.impute import SimpleImputer
+import numpy as np
 
 
 CATEGORICAL = ["protocol_type", "service", "flag"]
 TARGET = "class"
 
 
-def _bucket_rare_categories(df: pd.DataFrame, col: str, threshold: float = 0.01) -> pd.DataFrame:
-    """
-    Replace rare categories (< threshold frequency) with 'rare'.
-    """
+def _bucket_rare_categories(df: pd.DataFrame, col: str, threshold: float = 0.01):
     freq = df[col].value_counts(normalize=True)
-    rare_values = freq[freq < threshold].index
-    df[col] = df[col].replace(rare_values, "rare")
+    rare = freq[freq < threshold].index
+    df[col] = df[col].replace(rare, "rare")
     return df
 
 
 def _feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Add simple, meaningful features based on bytes.
-    """
     if "src_bytes" in df.columns and "dst_bytes" in df.columns:
         df["bytes_total"] = df["src_bytes"] + df["dst_bytes"]
         df["bytes_ratio"] = df["src_bytes"] / (df["dst_bytes"] + 1)
@@ -31,56 +27,52 @@ def _feature_engineering(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def preprocess(df: pd.DataFrame) -> Tuple:
-    """
-    Improved preprocessing:
-    - train/test split with stratification
-    - imputation (median for numeric, 'unknown' for categorical)
-    - rare-category bucketing
-    - feature engineering (ratios and totals)
-    - robust scaling instead of standard scaling
-    - OHE with unknown handling
-    Returns: X_train, X_test, y_train, y_test, preprocessor
-    """
-
-    # -------------------------------
-    # 1. Feature engineering
-    # -------------------------------
     df = df.copy()
-    df = _feature_engineering(df)
 
-    # -------------------------------
-    # 2. Rare category bucketing
-    # -------------------------------
+    # ------------------------------------------------
+    # 1. Ensure ALL categoricals are strings
+    # ------------------------------------------------
     for col in CATEGORICAL:
         if col in df.columns:
-            df = _bucket_rare_categories(df, col, threshold=0.01)
+            df[col] = df[col].astype(str)
 
-    # -------------------------------
-    # 3. Split target / features
-    # -------------------------------
+    # ------------------------------------------------
+    # 2. Feature engineering
+    # ------------------------------------------------
+    df = _feature_engineering(df)
+
+    # ------------------------------------------------
+    # 3. Rare category bucketing
+    # ------------------------------------------------
+    for col in CATEGORICAL:
+        if col in df.columns:
+            df = _bucket_rare_categories(df, col)
+
+    # ------------------------------------------------
+    # 4. Separate target
+    # ------------------------------------------------
     y = df[TARGET].astype(int)
-    X = df.drop(columns=[TARGET], axis=1)
+    X = df.drop(columns=[TARGET])
 
-    # Updated lists after feature engineering
-    num_cols = [c for c in X.columns if c not in CATEGORICAL]
     cat_cols = [c for c in CATEGORICAL if c in X.columns]
+    num_cols = [c for c in X.columns if c not in cat_cols]
 
-    # -------------------------------
-    # 4. Split train/test
-    # -------------------------------
+    # ------------------------------------------------
+    # 5. Train/test split
+    # ------------------------------------------------
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.25, random_state=42, stratify=y
+        X, y, test_size=0.25, stratify=y, random_state=42
     )
 
-    # -------------------------------
-    # 5. Build preprocessing pipeline
-    # -------------------------------
-    numeric_transformer = Pipeline(steps=[
+    # ------------------------------------------------
+    # 6. Preprocessing pipeline
+    # ------------------------------------------------
+    numeric_transformer = Pipeline([
         ("imputer", SimpleImputer(strategy="median")),
         ("scaler", RobustScaler())
     ])
 
-    categorical_transformer = Pipeline(steps=[
+    categorical_transformer = Pipeline([
         ("imputer", SimpleImputer(strategy="constant", fill_value="unknown")),
         ("encoder", OneHotEncoder(handle_unknown="ignore"))
     ])
@@ -91,8 +83,7 @@ def preprocess(df: pd.DataFrame) -> Tuple:
             ("cat", categorical_transformer, cat_cols),
         ],
         remainder="drop",
-        sparse_threshold=0.3,
+        sparse_threshold=0.3
     )
 
-    # NOTE: fit() must be done in the model step to avoid leakage.
     return X_train, X_test, y_train, y_test, preproc
