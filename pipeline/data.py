@@ -10,6 +10,7 @@ def load_data(path: str = "data/train_data.csv") -> pd.DataFrame:
     TODO (Student A): add dtype hints, NA handling policy, schema validation, and logging.
     """
     df = pd.read_csv(path)
+    df.describe()
 
     # basic sanity checks
     missing = [c for c in EXPECTED_CATEGORICAL if c not in df.columns]
